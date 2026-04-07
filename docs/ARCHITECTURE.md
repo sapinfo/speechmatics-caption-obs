@@ -93,11 +93,18 @@ src/
 |--------|------|---------|
 | `macos` | 로컬 빌드 | arm64 |
 | `macos-ci` | GitHub Actions | arm64 |
+| `macos-ci-x86_64` | GitHub Actions (Intel) | x86_64 |
 | `windows-x64` | Windows | x64 |
 | `ubuntu-x86_64` | Linux | x86_64 |
 
 ## CI/CD
 
-- **트리거**: main push → 빌드, 태그 push → 빌드 + Draft Release
-- **플랫폼**: macOS (macos-15), Windows (windows-2022), Ubuntu (ubuntu-24.04)
-- **아티팩트**: `.tar.xz` (macOS), `.zip` (Windows), `.deb` (Ubuntu)
+- **트리거**: 태그 push만 (`x.y.z` 형식) → 빌드 + Draft Release (일반 push에는 빌드 안 함)
+- **플랫폼**: macOS arm64 + x86_64 (macos-15), Windows (windows-2022), Ubuntu (ubuntu-24.04)
+- **아티팩트**: `.pkg` (macOS arm64, x86_64), `.zip` (Windows), `.deb` (Ubuntu)
+
+### macOS x86_64 크로스 컴파일
+- Apple Silicon CI runner에서 Intel Homebrew (`/usr/local/bin/brew`)를 `arch -x86_64`로 설치
+- OpenSSL x86_64: `/usr/local/opt/openssl@3`
+- CMakeLists.txt: `OPENSSL_ROOT_DIR`가 이미 설정되어 있으면 `brew --prefix openssl`로 덮어쓰지 않음
+- build-macos 스크립트: `--arch` 플래그로 아키텍처 선택
