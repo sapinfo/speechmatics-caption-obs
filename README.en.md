@@ -130,6 +130,12 @@ All dependencies (IXWebSocket, nlohmann/json, OBS SDK) are automatically downloa
 
 </details>
 
+## Support
+
+If you find this project helpful, buy me a coffee!
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/inseokko)
+
 ## License
 
 GPL-2.0 - see [LICENSE](LICENSE)

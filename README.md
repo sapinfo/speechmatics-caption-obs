@@ -130,6 +130,12 @@ cmake --build --preset ubuntu-x86_64
 
 </details>
 
+## 후원
+
+이 프로젝트가 도움이 되셨다면 커피 한 잔 사주세요!
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/inseokko)
+
 ## 라이선스
 
 GPL-2.0 - [LICENSE](LICENSE) 참조
