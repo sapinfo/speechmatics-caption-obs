@@ -64,6 +64,16 @@ git push origin 0.2.0
 - build-macos script: `--arch` flag controls target architecture
 - Intel Homebrew installed via `arch -x86_64` on Apple Silicon CI runners
 
+## OBS Plugin UI Notes
+
+### Button text toggle pattern
+`obs_properties_add_button()` callback에서 버튼 텍스트 변경 시:
+- `obs_property_set_description(property, "new text")` 사용 (콜백 내에서 직접)
+- `return true` → `RefreshProperties()` 호출 → 변경된 description 반영
+- `get_properties()`는 호출되지 않음 (`ReloadProperties()`만 호출함)
+
+### Current version: 0.1.1
+
 ## Related Project
 
 Sister project: SonioxCaptionPlugIn (same architecture, Soniox API)
