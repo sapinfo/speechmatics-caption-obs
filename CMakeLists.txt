@@ -19,7 +19,7 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 include(FetchContent)
 
 # macOS: Homebrew OpenSSL 경로 설정
-if(APPLE)
+if(APPLE AND NOT DEFINED CACHE{OPENSSL_ROOT_DIR})
   execute_process(
     COMMAND brew --prefix openssl
     OUTPUT_VARIABLE OPENSSL_ROOT_DIR
