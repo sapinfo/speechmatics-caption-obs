@@ -25,11 +25,24 @@ Speechmatics RT API를 사용한 OBS Studio **실시간 자막 + 번역** 플러
 - 한중일(CJK) 폰트 지원
 - 폰트 크기 조절 가능
 
+## 무료 플랜
+
+Speechmatics는 **신용카드 등록 없이** 무료로 시작할 수 있습니다.
+
+| 항목 | 무료 제공량 |
+|------|------------|
+| 실시간 음성 인식 (STT) | **매월 8시간 (480분)** |
+| 동시 세션 | 최대 2개 |
+| 지원 언어 | 55개 이상 |
+| 실시간 번역 | 지원 |
+
+> 개인 방송이나 소규모 스트리밍에는 무료 플랜으로 충분합니다.
+
 ## 빠른 시작
 
 ### 1. Speechmatics API 키 발급
 
-[speechmatics.com](https://www.speechmatics.com/)에서 가입 후 API 키를 발급받으세요.
+[speechmatics.com](https://www.speechmatics.com/)에서 가입 후 API 키를 발급받으세요. (신용카드 불필요)
 
 ### 2. 다운로드
 

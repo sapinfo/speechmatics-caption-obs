@@ -25,11 +25,24 @@ Speak in any language and see both the original captions and translated subtitle
 - CJK font support
 - Configurable font size
 
+## Free Plan
+
+Speechmatics offers a generous free tier — **no credit card required**.
+
+| Feature | Free Allowance |
+|---------|---------------|
+| Real-time STT | **8 hours (480 min) per month** |
+| Concurrent sessions | Up to 2 |
+| Languages | 55+ |
+| Real-time translation | Supported |
+
+> The free plan is more than enough for personal streaming or small broadcasts.
+
 ## Quick Start
 
 ### 1. Get Speechmatics API Key
 
-Sign up at [speechmatics.com](https://www.speechmatics.com/) and get your API key.
+Sign up at [speechmatics.com](https://www.speechmatics.com/) and get your API key. (No credit card required)
 
 ### 2. Download
 
