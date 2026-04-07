@@ -41,6 +41,7 @@
       "description": "Build for macOS 12.0+ (arm64) for CI",
       "generator": "Xcode",
       "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_COMPILE_WARNING_AS_ERROR": true,
         "ENABLE_CCACHE": true
       }
