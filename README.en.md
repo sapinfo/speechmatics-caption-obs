@@ -50,9 +50,12 @@ Sign up at [speechmatics.com](https://www.speechmatics.com/) and get your API ke
 
 | Platform | File |
 |----------|------|
-| macOS (Apple Silicon) | `speechmatics-caption-obs-x.x.x-macos-arm64.zip` |
-| Windows | `speechmatics-caption-obs-x.x.x-windows-x64.zip` |
-| Linux (Ubuntu) | `speechmatics-caption-obs-x.x.x-x86_64-linux-gnu.deb` |
+| macOS (Apple Silicon) | `speechmatics-caption-obs-0.1.0-macos-arm64.tar.xz` |
+| macOS (Intel) | Build from source (see below) |
+| Windows | `speechmatics-caption-obs-0.1.0-windows-x64.zip` |
+| Linux (Ubuntu) | `speechmatics-caption-obs-0.1.0-x86_64-linux-gnu.deb` |
+
+> **Intel Mac users**: The Apple Silicon binary runs on Intel Macs via Rosetta 2. For a native build, see the Build from Source section below.
 
 ### 3. Install
 

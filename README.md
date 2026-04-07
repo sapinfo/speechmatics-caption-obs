@@ -50,9 +50,12 @@ Speechmatics는 **신용카드 등록 없이** 무료로 시작할 수 있습니
 
 | 플랫폼 | 파일 |
 |--------|------|
-| macOS (Apple Silicon) | `speechmatics-caption-obs-x.x.x-macos-arm64.zip` |
-| Windows | `speechmatics-caption-obs-x.x.x-windows-x64.zip` |
-| Linux (Ubuntu) | `speechmatics-caption-obs-x.x.x-x86_64-linux-gnu.deb` |
+| macOS (Apple Silicon) | `speechmatics-caption-obs-0.1.0-macos-arm64.tar.xz` |
+| macOS (Intel) | 소스에서 빌드 (아래 참조) |
+| Windows | `speechmatics-caption-obs-0.1.0-windows-x64.zip` |
+| Linux (Ubuntu) | `speechmatics-caption-obs-0.1.0-x86_64-linux-gnu.deb` |
+
+> **Intel Mac 사용자**: Apple Silicon용 바이너리는 Rosetta 2로 실행 가능합니다. 네이티브 빌드가 필요한 경우 아래 소스 빌드 섹션을 참조하세요.
 
 ### 3. 설치
 
