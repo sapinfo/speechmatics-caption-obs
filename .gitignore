@@ -8,3 +8,4 @@ build_x86_64/
 *.xcodeproj
 *.xcworkspace
 CMakeUserPresets.json
+cmake/.CMakeBuildNumber
