@@ -72,7 +72,13 @@ git push origin 0.2.0
 - `return true` → `RefreshProperties()` 호출 → 변경된 description 반영
 - `get_properties()`는 호출되지 않음 (`ReloadProperties()`만 호출함)
 
-### Current version: 0.1.1
+### Text style properties
+`update_text_display()`에서 플랫폼별 텍스트 속성 전달:
+- macOS (`text_ft2_source_v2`): `color1`, `color2`, `outline`, `drop_shadow`, `custom_width`, `word_wrap`
+- Windows (`text_gdiplus`): `color`, `opacity`, `outline`(+size/color/opacity), `extents`(+cx/cy/wrap)
+- 폰트: `obs_properties_add_font` → `obs_data_get_obj(settings, "font")` 오브젝트로 읽기
+
+### Current version: 0.1.2
 
 ## Related Project
 
