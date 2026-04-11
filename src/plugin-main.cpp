@@ -62,6 +62,11 @@ struct speechmatics_caption_data {
 	bool translate{false};
 	std::string target_lang{"en"};
 
+	// Latency / silence segmentation
+	float max_delay{2.0f};
+	std::string max_delay_mode{"flexible"};
+	float eou_silence{0.0f}; // end_of_utterance_silence_trigger (0 = disabled)
+
 	// 텍스트 스타일
 	uint32_t color1{0xFFFFFFFF}; // ABGR (OBS 내부 포맷)
 	uint32_t color2{0xFFFFFFFF};
@@ -411,9 +416,13 @@ static void start_captioning(speechmatics_caption_data *data)
 	std::string lang = data->language;
 	bool do_translate = data->translate;
 	std::string trans_lang = data->target_lang;
+	float max_delay = data->max_delay;
+	std::string max_delay_mode = data->max_delay_mode;
+	float eou_silence = data->eou_silence;
 
 	data->websocket->setOnMessageCallback(
-		[data, lang, do_translate, trans_lang](const ix::WebSocketMessagePtr &msg) {
+		[data, lang, do_translate, trans_lang, max_delay, max_delay_mode,
+		 eou_silence](const ix::WebSocketMessagePtr &msg) {
 			switch (msg->type) {
 			case ix::WebSocketMessageType::Open: {
 				obs_log(LOG_INFO, "Speechmatics WebSocket connected");
@@ -427,8 +436,15 @@ static void start_captioning(speechmatics_caption_data *data)
 							  {"sample_rate", 16000}};
 				config["transcription_config"] = {{"language", lang},
 								  {"enable_partials", true},
-								  {"max_delay", 2.0},
+								  {"max_delay", max_delay},
+								  {"max_delay_mode", max_delay_mode},
 								  {"operating_point", "enhanced"}};
+
+				// End-of-utterance silence trigger (0 = disabled)
+				if (eou_silence > 0.0f) {
+					config["transcription_config"]
+					      ["end_of_utterance_silence_trigger"] = eou_silence;
+				}
 
 				// 번역 활성화
 				if (do_translate && !trans_lang.empty()) {
@@ -574,6 +590,9 @@ static void hotkey_toggle_caption(void *private_data, obs_hotkey_id, obs_hotkey_
 	data->audio_source_name = obs_data_get_string(settings, "audio_source");
 	data->translate = obs_data_get_bool(settings, "translate");
 	data->target_lang = obs_data_get_string(settings, "target_lang");
+	data->max_delay = (float)obs_data_get_double(settings, "max_delay");
+	data->max_delay_mode = obs_data_get_string(settings, "max_delay_mode");
+	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
 	obs_data_release(settings);
 
 	if (data->captioning)
@@ -653,6 +672,11 @@ static void speechmatics_caption_update(void *private_data, obs_data_t *settings
 	data->translate = obs_data_get_bool(settings, "translate");
 	data->target_lang = obs_data_get_string(settings, "target_lang");
 
+	// Latency / silence segmentation
+	data->max_delay = (float)obs_data_get_double(settings, "max_delay");
+	data->max_delay_mode = obs_data_get_string(settings, "max_delay_mode");
+	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
+
 	// 텍스트 스타일
 	data->color1 = (uint32_t)obs_data_get_int(settings, "color1");
 	data->color2 = (uint32_t)obs_data_get_int(settings, "color2");
@@ -702,6 +726,9 @@ static bool on_start_stop_clicked(obs_properties_t *, obs_property_t *property, 
 	data->audio_source_name = obs_data_get_string(settings, "audio_source");
 	data->translate = obs_data_get_bool(settings, "translate");
 	data->target_lang = obs_data_get_string(settings, "target_lang");
+	data->max_delay = (float)obs_data_get_double(settings, "max_delay");
+	data->max_delay_mode = obs_data_get_string(settings, "max_delay_mode");
+	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
 	obs_data_release(settings);
 
 	if (data->captioning) {
@@ -734,7 +761,13 @@ static obs_properties_t *speechmatics_caption_get_properties(void *private_data)
 	obs_properties_t *props = obs_properties_create();
 
 	// API Key
-	obs_properties_add_text(props, "api_key", "Speechmatics API Key", OBS_TEXT_PASSWORD);
+	obs_property_t *p_api =
+		obs_properties_add_text(props, "api_key", "Speechmatics API Key", OBS_TEXT_PASSWORD);
+	obs_property_set_long_description(
+		p_api,
+		"Your Speechmatics API key.\n"
+		"Get one at https://portal.speechmatics.com → API Keys.\n"
+		"The free tier includes monthly real-time minutes; paid plans unlock higher usage.");
 
 	// 오디오 소스 선택
 	obs_property_t *audio_list =
@@ -742,6 +775,12 @@ static obs_properties_t *speechmatics_caption_get_properties(void *private_data)
 					OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(audio_list, "(Select audio source)", "");
 	obs_enum_sources(enum_audio_sources, audio_list);
+	obs_property_set_long_description(
+		audio_list,
+		"OBS audio source to transcribe (microphone, desktop audio, media source, etc.).\n"
+		"The source must be active in your current scene collection.\n"
+		"Audio is downsampled from 48 kHz float to 16 kHz PCM16 and streamed to\n"
+		"Speechmatics over WebSocket.");
 
 	// 언어 선택
 	obs_property_t *lang =
@@ -754,9 +793,20 @@ static obs_properties_t *speechmatics_caption_get_properties(void *private_data)
 	obs_property_list_add_string(lang, "Spanish", "es");
 	obs_property_list_add_string(lang, "French", "fr");
 	obs_property_list_add_string(lang, "German", "de");
+	obs_property_set_long_description(
+		lang,
+		"Source language for transcription.\n"
+		"Speechmatics uses ISO 639 codes — note that Mandarin Chinese is 'cmn' (not 'zh').\n"
+		"Setting the correct language is critical: Speechmatics RT does not auto-detect.");
 
 	// 번역 옵션
-	obs_properties_add_bool(props, "translate", "Enable Translation");
+	obs_property_t *p_translate = obs_properties_add_bool(props, "translate", "Enable Translation");
+	obs_property_set_long_description(
+		p_translate,
+		"Stream translated captions in addition to the source-language transcript.\n"
+		"Translation is delivered as separate AddTranslation messages and shown on a\n"
+		"second line below the original transcript.\n"
+		"Note: translation uses extra API quota and may add a small amount of latency.");
 
 	obs_property_t *target =
 		obs_properties_add_list(props, "target_lang", "Translate To", OBS_COMBO_TYPE_LIST,
@@ -768,23 +818,112 @@ static obs_properties_t *speechmatics_caption_get_properties(void *private_data)
 	obs_property_list_add_string(target, "Spanish", "es");
 	obs_property_list_add_string(target, "French", "fr");
 	obs_property_list_add_string(target, "German", "de");
+	obs_property_set_long_description(
+		target,
+		"Target language for translation. Only used when 'Enable Translation' is on.\n"
+		"Choose a different language than the source — translating to the same language\n"
+		"is rejected by the API.");
+
+	// ─── Latency / Silence Segmentation ───
+
+	obs_property_t *p_max_delay = obs_properties_add_float_slider(
+		props, "max_delay", "Max Delay (sec)", 0.7, 20.0, 0.1);
+	obs_property_set_long_description(
+		p_max_delay,
+		"Maximum time (seconds) Speechmatics waits before emitting a final transcript.\n"
+		"Lower values = faster, more frequent finals (better for live captions).\n"
+		"Higher values = more accurate, longer segments (better for transcripts).\n"
+		"\n"
+		"Recommended:\n"
+		"• 1.0-1.5s: Live streaming, conversational, low-latency feel\n"
+		"• 2.0s: General use (default) — good balance of speed and accuracy\n"
+		"• 3.0-5.0s: Lectures, sermons — fewer interruptions, more context\n"
+		"• 5.0-20.0s: Offline-style transcription, highest accuracy");
+
+	obs_property_t *p_max_delay_mode =
+		obs_properties_add_list(props, "max_delay_mode", "Max Delay Mode",
+					OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(p_max_delay_mode, "Flexible (allow word boundary)", "flexible");
+	obs_property_list_add_string(p_max_delay_mode, "Fixed (strict cutoff)", "fixed");
+	obs_property_set_long_description(
+		p_max_delay_mode,
+		"How Speechmatics enforces Max Delay when a word straddles the boundary.\n"
+		"\n"
+		"• Flexible (default): Slightly exceed Max Delay to keep words intact.\n"
+		"  Recommended for natural-looking captions — words are never split.\n"
+		"\n"
+		"• Fixed: Cut exactly at Max Delay even if it splits a word.\n"
+		"  Use only when strict timing matters more than readability\n"
+		"  (e.g. real-time subtitles synced to a timecode).");
+
+	obs_property_t *p_eou = obs_properties_add_float_slider(
+		props, "eou_silence", "End-of-Utterance Silence (sec)", 0.0, 2.0, 0.1);
+	obs_property_set_long_description(
+		p_eou,
+		"Silence duration (seconds) after which Speechmatics finalizes the current\n"
+		"utterance and emits an EndOfUtterance event. 0 = disabled (use Max Delay only).\n"
+		"\n"
+		"When enabled, captions snap to natural speech pauses instead of fixed time\n"
+		"windows. Useful for Q&A, dictation, and short utterances.\n"
+		"\n"
+		"Recommended:\n"
+		"• 0.0s: Disabled (default) — only Max Delay controls segmentation\n"
+		"• 0.4-0.6s: Quick conversation, dictation — snappy segment breaks\n"
+		"• 0.8-1.2s: Natural conversation — segments end at sentence boundaries\n"
+		"• 1.5-2.0s: Lectures, monologue — only break at long pauses\n"
+		"\n"
+		"Note: Range is 0-2.0 seconds (Speechmatics RT API limit).");
 
 	// ─── 텍스트 스타일 ───
 
 	// 폰트 선택 (시스템 폰트 다이얼로그)
-	obs_properties_add_font(props, "font", "Font");
+	obs_property_t *p_font = obs_properties_add_font(props, "font", "Font");
+	obs_property_set_long_description(
+		p_font,
+		"System font picker for the caption text.\n"
+		"For CJK languages, choose a font that includes the needed glyphs\n"
+		"(e.g. Apple SD Gothic Neo on macOS, Malgun Gothic on Windows,\n"
+		"Noto Sans CJK on Linux).");
 
 	// 텍스트 색상
-	obs_properties_add_color(props, "color1", "Text Color");
-	obs_properties_add_color(props, "color2", "Text Color 2 (Gradient)");
+	obs_property_t *p_color1 = obs_properties_add_color(props, "color1", "Text Color");
+	obs_property_set_long_description(p_color1, "Primary text color for captions.");
+
+	obs_property_t *p_color2 =
+		obs_properties_add_color(props, "color2", "Text Color 2 (Gradient)");
+	obs_property_set_long_description(
+		p_color2,
+		"Secondary color used for a vertical gradient (macOS/Linux FreeType renderer only).\n"
+		"Set to the same value as Text Color for a solid fill.\n"
+		"Ignored on Windows (GDI+ renderer does not support gradients).");
 
 	// 텍스트 효과
-	obs_properties_add_bool(props, "outline", "Outline");
-	obs_properties_add_bool(props, "drop_shadow", "Drop Shadow");
+	obs_property_t *p_outline = obs_properties_add_bool(props, "outline", "Outline");
+	obs_property_set_long_description(
+		p_outline,
+		"Draws a black outline around each glyph for readability over busy backgrounds.\n"
+		"Strongly recommended for streaming over gameplay or video footage.");
+
+	obs_property_t *p_shadow = obs_properties_add_bool(props, "drop_shadow", "Drop Shadow");
+	obs_property_set_long_description(
+		p_shadow,
+		"Adds a drop shadow behind the text for extra contrast.\n"
+		"Can be combined with Outline. Windows GDI+ renderer ignores this option.");
 
 	// 텍스트 레이아웃
-	obs_properties_add_int(props, "custom_width", "Custom Text Width (0=auto)", 0, 4096, 1);
-	obs_properties_add_bool(props, "word_wrap", "Word Wrap");
+	obs_property_t *p_width = obs_properties_add_int(
+		props, "custom_width", "Custom Text Width (0=auto)", 0, 4096, 1);
+	obs_property_set_long_description(
+		p_width,
+		"Maximum width of the text box in pixels (0 = auto-size to text).\n"
+		"Set to your stream width (e.g. 1920) and enable Word Wrap to keep\n"
+		"long captions from extending off-screen.");
+
+	obs_property_t *p_wrap = obs_properties_add_bool(props, "word_wrap", "Word Wrap");
+	obs_property_set_long_description(
+		p_wrap,
+		"Wraps long caption lines to the next row when they exceed Custom Text Width.\n"
+		"Requires Custom Text Width > 0 to take effect.");
 
 	// 버튼들
 	obs_properties_add_button(props, "test_connection", "Test Connection", on_test_clicked);
@@ -802,6 +941,11 @@ static void speechmatics_caption_get_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, "audio_source", "");
 	obs_data_set_default_bool(settings, "translate", false);
 	obs_data_set_default_string(settings, "target_lang", "en");
+
+	// Latency / silence segmentation
+	obs_data_set_default_double(settings, "max_delay", 2.0);
+	obs_data_set_default_string(settings, "max_delay_mode", "flexible");
+	obs_data_set_default_double(settings, "eou_silence", 0.0);
 
 	// 폰트 기본값 (obs_data_t 오브젝트)
 	obs_data_t *font_obj = obs_data_create();

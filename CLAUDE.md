@@ -19,7 +19,7 @@ cp -R build_macos/RelWithDebInfo/speechmatics-caption-obs.plugin \
 
 ## Key Architecture
 
-- Single source file: `src/plugin-main.cpp` (~530 lines)
+- Single source file: `src/plugin-main.cpp` (~900 lines)
 - WebSocket client: IXWebSocket (via CMake FetchContent)
 - JSON parsing: nlohmann/json (via CMake FetchContent)
 - Audio: OBS float32 48kHz → pcm_s16le 16kHz (3:1 downsample)
@@ -35,6 +35,11 @@ cp -R build_macos/RelWithDebInfo/speechmatics-caption-obs.plugin \
 ### Translation response format differs from transcription:
 - Transcription: `results[].alternatives[].content`
 - Translation: `results[].content` (no alternatives nesting)
+
+### Latency / silence segmentation params (in `transcription_config`)
+- `max_delay` (float, 0.7-20.0): Max time before final transcript emitted. User-exposed since v0.2.0
+- `max_delay_mode` ("flexible" | "fixed"): Allow word boundary overshoot vs strict cutoff
+- `end_of_utterance_silence_trigger` (float, 0-2.0): Silence (sec) that finalizes a segment. Only added to config if > 0 (omit entirely when disabled)
 
 ## Language Codes
 
@@ -78,7 +83,11 @@ git push origin 0.2.0
 - Windows (`text_gdiplus`): `color`, `opacity`, `outline`(+size/color/opacity), `extents`(+cx/cy/wrap)
 - 폰트: `obs_properties_add_font` → `obs_data_get_obj(settings, "font")` 오브젝트로 읽기
 
-### Current version: 0.1.2
+### Tooltips
+모든 properties에 `obs_property_set_long_description(p, "...")` 적용. 마우스 호버 시 표시.
+시나리오별 권장값 포함이 표준 패턴 (ElevenLabs/Speechmatics 두 프로젝트 동일).
+
+### Current version: 0.2.0
 
 ## Related Project
 

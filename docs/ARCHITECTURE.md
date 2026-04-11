@@ -87,6 +87,21 @@ src/
 - 중국어: `cmn` (ISO 639-3, Soniox의 `zh`와 다름)
 - 한국어: `ko` (동일)
 
+### 레이턴시 / 사일런스 세분화 파라미터 (v0.2.0+)
+
+`StartRecognition.transcription_config`에 들어가는 사용자 노출 파라미터:
+
+| 필드 | 타입 | 범위 | 기본값 | 설명 |
+|------|------|------|--------|------|
+| `max_delay` | float | 0.7 ~ 20.0 | 2.0 | 최종 자막 출력까지의 최대 대기 시간 (초) |
+| `max_delay_mode` | string | `"flexible"` / `"fixed"` | `"flexible"` | 단어 경계에서 max_delay를 살짝 넘길지 여부 |
+| `end_of_utterance_silence_trigger` | float | 0.0 ~ 2.0 | 0.0 (disabled) | 무음이 이 시간 이상 지속되면 EndOfUtterance 발화 마감. 0이면 메시지 자체를 보내지 않음 |
+
+**구현 노트:**
+- `eou_silence > 0.0f`일 때만 `transcription_config`에 필드를 추가 (Speechmatics는 0을 disabled로 해석하지만, 명시적 누락이 더 안전)
+- 캡션 시작 시 시점에 락된 값이 람다로 캡처되어 WebSocket 핸들러로 전달됨 — 캡셔닝 중 변경 시 다음 Start에서 반영
+- UI는 `obs_property_set_long_description()`으로 모든 속성에 시나리오별 권장값 포함된 툴팁 제공
+
 ## 빌드 프리셋
 
 | 프리셋 | 용도 | 아키텍처 |

@@ -20,10 +20,12 @@ Speak in any language and see both the original captions and translated subtitle
 
 - **Real-time speech-to-text** (Speechmatics RT Enhanced model)
 - **Real-time translation** — translated subtitles appear alongside original captions instantly (KO↔EN, KO↔JA, KO↔ZH, and more — 7 languages)
+- **Latency / silence segmentation controls** — Max Delay, Max Delay Mode, End-of-Utterance Silence Trigger
+- **Text style customization** — font, color, outline, drop shadow, width, word wrap
+- **Detailed tooltips on every property** — hover for recommended values per scenario
 - Hotkey support (start/stop without opening Properties)
 - Auto-reconnect on disconnect
 - CJK font support
-- Configurable font size
 
 ## Free Plan
 
@@ -102,6 +104,24 @@ Or manually copy to `~/.config/obs-studio/plugins/speechmatics-caption-obs/`
    - (Optional) Check **Enable Translation** and select target language
 3. Click **Start Caption**
 4. Speak into your microphone — captions appear in real-time!
+
+> Hover over any property to see a detailed tooltip with recommended values and use cases.
+
+### Caption Timing Tuning (v0.2.0+)
+
+Fine-tune how quickly captions appear and how they are split.
+
+| Property | Range | Default | Description |
+|----------|-------|---------|-------------|
+| **Max Delay** | 0.7 ~ 20.0s | 2.0 | Maximum wait before emitting a final transcript (lower = faster) |
+| **Max Delay Mode** | flexible / fixed | flexible | Word boundary protection (flexible: keep words intact / fixed: hard cutoff) |
+| **End-of-Utterance Silence** | 0.0 ~ 2.0s | 0.0 (off) | Silence duration that finalizes a segment. 0 disables this trigger |
+
+**Recommended presets:**
+- 🎮 **Game streaming / Live**: Max Delay `1.0~1.5s`, EoU `0.0s`
+- 🎤 **Lectures / Sermons**: Max Delay `3.0~5.0s`, EoU `1.5~2.0s`
+- 💬 **Conversation / Q&A**: Max Delay `2.0s`, EoU `0.5~0.8s`
+- 📝 **Dictation**: Max Delay `2.0s`, EoU `0.4~0.6s`
 
 ### Hotkey
 
