@@ -23,6 +23,7 @@ cp -R build_macos/RelWithDebInfo/speechmatics-caption-obs.plugin \
 - WebSocket client: IXWebSocket (via CMake FetchContent)
 - JSON parsing: nlohmann/json (via CMake FetchContent)
 - Audio: OBS float32 48kHz → pcm_s16le 16kHz (3:1 downsample)
+- Dual text sources: `text_source` (원문) + `text_source_trans` (번역용, Both 모드)
 
 ## Speechmatics RT API Protocol
 
@@ -30,16 +31,36 @@ cp -R build_macos/RelWithDebInfo/speechmatics-caption-obs.plugin \
 2. Send `StartRecognition` JSON → wait for `RecognitionStarted`
 3. Stream binary PCM audio → receive `AddPartialTranscript` / `AddTranscript`
 4. Translation: `AddPartialTranslation` / `AddTranslation` (separate messages)
-5. Stop: send `EndOfStream` with `last_seq_no` → receive `EndOfTranscript`
+5. `EndOfUtterance` — utterance boundary detected, clear accumulated text
+6. Stop: send `EndOfStream` with `last_seq_no` → receive `EndOfTranscript`
+
+### Display modes (v0.3.0)
+- **Original**: 원문만 표시 (text_source)
+- **Translation**: 번역만 표시 (text_source)
+- **Both**: 원문(상단) + 번역(하단) 수직 스택 (text_source + text_source_trans)
 
 ### Translation response format differs from transcription:
 - Transcription: `results[].alternatives[].content`
 - Translation: `results[].content` (no alternatives nesting)
 
-### Latency / silence segmentation params (in `transcription_config`)
-- `max_delay` (float, 0.7-20.0): Max time before final transcript emitted. User-exposed since v0.2.0
-- `max_delay_mode` ("flexible" | "fixed"): Allow word boundary overshoot vs strict cutoff
-- `end_of_utterance_silence_trigger` (float, 0-2.0): Silence (sec) that finalizes a segment. Only added to config if > 0 (omit entirely when disabled)
+### End-of-utterance detection (in `transcription_config.conversation_config`)
+- `end_of_utterance_silence_trigger` (float, 0-2.0): Silence (sec) that finalizes an utterance
+- **MUST be inside `conversation_config`**, not `transcription_config` root
+- Recommended: 0.5-0.8s for live captions, 0.8-1.2s for dictation
+- API sends `EndOfUtterance` message when silence threshold is met → plugin clears accumulated text
+
+### Text accumulation strategy
+- `AddTranscript` fragments are accumulated (API sends word-level finals, not sentences)
+- `EndOfUtterance` clears all buffers and display
+- No rolling caption / no committed protection — simple accumulate + clear
+
+### Error handling (v0.3.0)
+- API Error or WebSocket close code 4xxx → disable auto-reconnection, stop captioning
+- Prevents quota_exceeded infinite reconnect loop
+
+### Test connection
+- `RecognitionStarted` received → immediately send `EndOfStream` → wait for `EndOfTranscript` → close
+- Prevents test sessions from consuming quota
 
 ## Language Codes
 
@@ -57,10 +78,10 @@ GitHub Actions on **tag push only** (not branch push). Tag `x.y.z` creates Draft
 
 ### Release workflow:
 ```bash
-git tag 0.2.0
-git push origin 0.2.0
+git tag 0.3.0
+git push origin 0.3.0
 # → GitHub Actions builds all platforms → Draft Release created
-# → Publish manually on GitHub Releases page (or: gh release edit 0.2.0 --draft=false)
+# → Publish manually on GitHub Releases page (or: gh release edit 0.3.0 --draft=false)
 ```
 
 ### Key CI details:
@@ -78,7 +99,7 @@ git push origin 0.2.0
 - `get_properties()`는 호출되지 않음 (`ReloadProperties()`만 호출함)
 
 ### Text style properties
-`update_text_display()`에서 플랫폼별 텍스트 속성 전달:
+`update_source_text()`에서 플랫폼별 텍스트 속성 전달:
 - macOS (`text_ft2_source_v2`): `color1`, `color2`, `outline`, `drop_shadow`, `custom_width`, `word_wrap`
 - Windows (`text_gdiplus`): `color`, `opacity`, `outline`(+size/color/opacity), `extents`(+cx/cy/wrap)
 - 폰트: `obs_properties_add_font` → `obs_data_get_obj(settings, "font")` 오브젝트로 읽기
@@ -87,7 +108,7 @@ git push origin 0.2.0
 모든 properties에 `obs_property_set_long_description(p, "...")` 적용. 마우스 호버 시 표시.
 시나리오별 권장값 포함이 표준 패턴 (ElevenLabs/Speechmatics 두 프로젝트 동일).
 
-### Current version: 0.2.0
+### Current version: 0.3.0
 
 ## Related Project
 

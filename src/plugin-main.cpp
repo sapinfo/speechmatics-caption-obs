@@ -16,6 +16,7 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <cmath>
 
 using json = nlohmann::json;
 
@@ -25,7 +26,8 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 // ─── 소스 데이터 구조체 ───
 struct speechmatics_caption_data {
 	obs_source_t *source;
-	obs_source_t *text_source;
+	obs_source_t *text_source;       // 원문용
+	obs_source_t *text_source_trans; // 번역용
 
 	// 핫키
 	obs_hotkey_id hotkey_id{OBS_INVALID_HOTKEY_ID};
@@ -59,13 +61,12 @@ struct speechmatics_caption_data {
 	int font_flags{0};
 	std::string api_key;
 	std::string language{"ko"};
-	bool translate{false};
+	std::string display_mode{"original"}; // "original", "translation", or "both"
 	std::string target_lang{"en"};
+	float eou_silence{0.5f}; // end_of_utterance_silence_trigger (conversation_config)
 
-	// Latency / silence segmentation
-	float max_delay{2.0f};
-	std::string max_delay_mode{"flexible"};
-	float eou_silence{0.0f}; // end_of_utterance_silence_trigger (0 = disabled)
+
+
 
 	// 텍스트 스타일
 	uint32_t color1{0xFFFFFFFF}; // ABGR (OBS 내부 포맷)
@@ -77,9 +78,9 @@ struct speechmatics_caption_data {
 };
 
 // ─── 텍스트 표시 업데이트 ───
-static void update_text_display(speechmatics_caption_data *data, const char *text)
+static void update_source_text(speechmatics_caption_data *data, obs_source_t *src, const char *text)
 {
-	if (!data->text_source)
+	if (!src)
 		return;
 
 	obs_data_t *font = obs_data_create();
@@ -118,10 +119,20 @@ static void update_text_display(speechmatics_caption_data *data, const char *tex
 	obs_data_set_bool(s, "word_wrap", data->word_wrap);
 #endif
 
-	obs_source_update(data->text_source, s);
+	obs_source_update(src, s);
 
 	obs_data_release(font);
 	obs_data_release(s);
+}
+
+static void update_text_display(speechmatics_caption_data *data, const char *text)
+{
+	update_source_text(data, data->text_source, text);
+}
+
+static void update_trans_display(speechmatics_caption_data *data, const char *text)
+{
+	update_source_text(data, data->text_source_trans, text);
 }
 
 // ─── 오디오 캡처 콜백 ───
@@ -210,12 +221,15 @@ static void handle_speechmatics_message(speechmatics_caption_data *data, const s
 			return;
 		}
 
-		// Error
+		// Error — 재연결 중지하고 캡셔닝 종료
 		if (msg_type == "Error") {
 			std::string reason = resp.value("reason", "Unknown error");
 			std::string err_type = resp.value("type", "");
 			obs_log(LOG_ERROR, "Speechmatics error [%s]: %s", err_type.c_str(),
 				reason.c_str());
+			if (data->websocket)
+				data->websocket->disableAutomaticReconnection();
+			data->captioning = false;
 			update_text_display(data, ("Error: " + reason).c_str());
 			return;
 		}
@@ -226,59 +240,59 @@ static void handle_speechmatics_message(speechmatics_caption_data *data, const s
 			return;
 		}
 
-		// AddPartialTranscript — 중간 결과 (덮어쓰기됨)
+		// AddPartialTranscript — 중간 결과 (누적 final + 현재 partial)
 		if (msg_type == "AddPartialTranscript") {
 			std::string text = extract_transcript(resp);
 
 			std::lock_guard<std::mutex> lock(data->text_mutex);
 			data->partial_text = text;
 
-			std::string display = data->final_text + text;
-			while (!display.empty() && display.front() == ' ')
-				display.erase(display.begin());
-
-			if (data->translate && !data->translation_final.empty()) {
-				display += "\n" + data->translation_final + data->translation_partial;
+			if (data->display_mode != "translation") {
+				std::string display = data->final_text + text;
+				while (!display.empty() && display.front() == ' ')
+					display.erase(display.begin());
+				if (!display.empty())
+					update_text_display(data, display.c_str());
 			}
-
-			if (!display.empty())
-				update_text_display(data, display.c_str());
 			return;
 		}
 
-		// AddTranscript — 확정 결과
+		// AddTranscript — 확정 결과 (누적, EndOfUtterance에서 클리어)
 		if (msg_type == "AddTranscript") {
 			std::string text = extract_transcript(resp);
+			if (text.empty())
+				return;
 
 			std::lock_guard<std::mutex> lock(data->text_mutex);
-
-			// 확정 텍스트에 추가
-			if (!text.empty()) {
-				if (!data->final_text.empty())
-					data->final_text += " ";
-				data->final_text += text;
-			}
+			if (!data->final_text.empty())
+				data->final_text += " ";
+			data->final_text += text;
 			data->partial_text.clear();
-
-			// 너무 길면 앞부분 제거 (자막용으로 최근 텍스트만 유지)
-			if (data->final_text.size() > 200) {
-				size_t space = data->final_text.find(' ', data->final_text.size() - 150);
-				if (space != std::string::npos)
-					data->final_text = data->final_text.substr(space + 1);
-			}
-
-			std::string display = data->final_text;
-			while (!display.empty() && display.front() == ' ')
-				display.erase(display.begin());
-
-			if (data->translate && !data->translation_final.empty()) {
-				display += "\n" + data->translation_final;
-			}
 
 			data->turn_count++;
 			obs_log(LOG_INFO, "[Final %d] %s", data->turn_count, text.c_str());
 
-			update_text_display(data, display.c_str());
+			if (data->display_mode != "translation") {
+				std::string display = data->final_text;
+				while (!display.empty() && display.front() == ' ')
+					display.erase(display.begin());
+				update_text_display(data, display.c_str());
+			}
+			return;
+		}
+
+		// EndOfUtterance — 발화 종료, 즉시 클리어
+		if (msg_type == "EndOfUtterance") {
+			std::lock_guard<std::mutex> lock(data->text_mutex);
+			obs_log(LOG_INFO, "[EndOfUtterance] %s", data->final_text.c_str());
+			data->final_text.clear();
+			data->partial_text.clear();
+			data->translation_final.clear();
+			data->translation_partial.clear();
+			if (data->display_mode != "translation")
+				update_text_display(data, "");
+			if (data->display_mode == "both")
+				update_trans_display(data, "");
 			return;
 		}
 
@@ -289,43 +303,39 @@ static void handle_speechmatics_message(speechmatics_caption_data *data, const s
 			std::lock_guard<std::mutex> lock(data->text_mutex);
 			data->translation_partial = text;
 
-			std::string display = data->final_text + data->partial_text;
+			std::string display = data->translation_final + text;
 			while (!display.empty() && display.front() == ' ')
 				display.erase(display.begin());
-			if (!text.empty() || !data->translation_final.empty())
-				display += "\n" + data->translation_final + text;
-
-			update_text_display(data, display.c_str());
+			if (!display.empty()) {
+				if (data->display_mode == "both")
+					update_trans_display(data, display.c_str());
+				else if (data->display_mode == "translation")
+					update_text_display(data, display.c_str());
+			}
 			return;
 		}
 
-		// AddTranslation — 번역 확정 결과
+		// AddTranslation — 번역 확정 결과 (누적)
 		if (msg_type == "AddTranslation") {
 			std::string text = extract_transcript(resp);
+			if (text.empty())
+				return;
 
 			std::lock_guard<std::mutex> lock(data->text_mutex);
-			if (!text.empty()) {
-				if (!data->translation_final.empty())
-					data->translation_final += " ";
-				data->translation_final += text;
-			}
+			if (!data->translation_final.empty())
+				data->translation_final += " ";
+			data->translation_final += text;
 			data->translation_partial.clear();
 
-			// 번역도 길이 제한
-			if (data->translation_final.size() > 200) {
-				size_t space = data->translation_final.find(
-					' ', data->translation_final.size() - 150);
-				if (space != std::string::npos)
-					data->translation_final =
-						data->translation_final.substr(space + 1);
-			}
-
-			std::string display = data->final_text + data->partial_text;
+			std::string display = data->translation_final;
 			while (!display.empty() && display.front() == ' ')
 				display.erase(display.begin());
-			display += "\n" + data->translation_final;
-
-			update_text_display(data, display.c_str());
+			if (!display.empty()) {
+				if (data->display_mode == "both")
+					update_trans_display(data, display.c_str());
+				else if (data->display_mode == "translation")
+					update_text_display(data, display.c_str());
+			}
 			return;
 		}
 
@@ -368,6 +378,7 @@ static void stop_captioning(speechmatics_caption_data *data)
 	data->recognized = false;
 	data->stopping = false;
 	update_text_display(data, "Speechmatics Captions Ready!");
+	update_trans_display(data, "");
 	obs_log(LOG_INFO, "Captioning stopped");
 }
 
@@ -414,15 +425,12 @@ static void start_captioning(speechmatics_caption_data *data)
 	data->websocket->setMaxWaitBetweenReconnectionRetries(30000);
 
 	std::string lang = data->language;
-	bool do_translate = data->translate;
+	std::string disp_mode = data->display_mode;
 	std::string trans_lang = data->target_lang;
-	float max_delay = data->max_delay;
-	std::string max_delay_mode = data->max_delay_mode;
 	float eou_silence = data->eou_silence;
 
 	data->websocket->setOnMessageCallback(
-		[data, lang, do_translate, trans_lang, max_delay, max_delay_mode,
-		 eou_silence](const ix::WebSocketMessagePtr &msg) {
+		[data, lang, disp_mode, trans_lang, eou_silence](const ix::WebSocketMessagePtr &msg) {
 			switch (msg->type) {
 			case ix::WebSocketMessageType::Open: {
 				obs_log(LOG_INFO, "Speechmatics WebSocket connected");
@@ -434,20 +442,20 @@ static void start_captioning(speechmatics_caption_data *data)
 				config["audio_format"] = {{"type", "raw"},
 							  {"encoding", "pcm_s16le"},
 							  {"sample_rate", 16000}};
+
 				config["transcription_config"] = {{"language", lang},
 								  {"enable_partials", true},
-								  {"max_delay", max_delay},
-								  {"max_delay_mode", max_delay_mode},
 								  {"operating_point", "enhanced"}};
 
-				// End-of-utterance silence trigger (0 = disabled)
+				// End-of-utterance: conversation_config 안에 배치 (API 스키마 요구)
 				if (eou_silence > 0.0f) {
-					config["transcription_config"]
-					      ["end_of_utterance_silence_trigger"] = eou_silence;
+					double eou_clean = std::round(eou_silence * 10.0) / 10.0;
+					config["transcription_config"]["conversation_config"] = {
+						{"end_of_utterance_silence_trigger", eou_clean}};
 				}
 
-				// 번역 활성화
-				if (do_translate && !trans_lang.empty()) {
+				// 번역 활성화 (translation 또는 both 모드)
+				if (disp_mode != "original" && !trans_lang.empty()) {
 					config["translation_config"] = {
 						{"target_languages", json::array({trans_lang})},
 						{"enable_partials", true}};
@@ -457,7 +465,7 @@ static void start_captioning(speechmatics_caption_data *data)
 
 				std::string cfg = config.dump();
 				data->websocket->send(cfg);
-				obs_log(LOG_INFO, "StartRecognition sent (%zu bytes)", cfg.size());
+				obs_log(LOG_INFO, "StartRecognition sent: %s", cfg.c_str());
 
 				update_text_display(data, "Waiting for recognition...");
 				break;
@@ -472,6 +480,9 @@ static void start_captioning(speechmatics_caption_data *data)
 					msg->errorInfo.reason.c_str(), msg->errorInfo.http_status);
 				data->connected = false;
 				data->recognized = false;
+				// 치명적 에러 시 재연결 중지
+				data->websocket->disableAutomaticReconnection();
+				data->captioning = false;
 				update_text_display(data,
 						    ("Error: " + msg->errorInfo.reason).c_str());
 				break;
@@ -482,6 +493,11 @@ static void start_captioning(speechmatics_caption_data *data)
 				data->connected = false;
 				data->recognized = false;
 				if (!data->stopping && data->captioning) {
+					// 서버가 에러로 닫은 경우 (4xxx) 재연결 중지
+					if (msg->closeInfo.code >= 4000) {
+						data->websocket->disableAutomaticReconnection();
+						data->captioning = false;
+					}
 					std::string reason = msg->closeInfo.reason.empty()
 								    ? "Connection closed"
 								    : msg->closeInfo.reason;
@@ -552,6 +568,14 @@ static void test_connection(speechmatics_caption_data *data)
 				if (msg_type == "RecognitionStarted") {
 					update_text_display(data, "Connected! Ready.");
 					data->recognized = true;
+					// 테스트 성공 → 즉시 세션 종료 (quota 소진 방지)
+					json eos;
+					eos["message"] = "EndOfStream";
+					eos["last_seq_no"] = 0;
+					data->websocket->send(eos.dump());
+				} else if (msg_type == "EndOfTranscript") {
+					// EndOfStream 응답 → 커넥션 닫기
+					data->websocket->stop();
 				} else if (msg_type == "Error") {
 					std::string reason = resp.value("reason", "Unknown error");
 					update_text_display(data, ("Error: " + reason).c_str());
@@ -588,10 +612,8 @@ static void hotkey_toggle_caption(void *private_data, obs_hotkey_id, obs_hotkey_
 	data->api_key = obs_data_get_string(settings, "api_key");
 	data->language = obs_data_get_string(settings, "language");
 	data->audio_source_name = obs_data_get_string(settings, "audio_source");
-	data->translate = obs_data_get_bool(settings, "translate");
+	data->display_mode = obs_data_get_string(settings, "display_mode");
 	data->target_lang = obs_data_get_string(settings, "target_lang");
-	data->max_delay = (float)obs_data_get_double(settings, "max_delay");
-	data->max_delay_mode = obs_data_get_string(settings, "max_delay_mode");
 	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
 	obs_data_release(settings);
 
@@ -633,6 +655,16 @@ static void *speechmatics_caption_create(obs_data_t *settings, obs_source_t *sou
 #endif
 	obs_data_release(ts);
 
+	// 번역용 텍스트 소스
+	obs_data_t *ts2 = obs_data_create();
+	obs_data_set_string(ts2, "text", "");
+#ifdef _WIN32
+	data->text_source_trans = obs_source_create_private("text_gdiplus", "speechmatics_text_trans", ts2);
+#else
+	data->text_source_trans = obs_source_create_private("text_ft2_source_v2", "speechmatics_text_trans", ts2);
+#endif
+	obs_data_release(ts2);
+
 	data->hotkey_id = obs_hotkey_register_source(source, "speechmatics_toggle_caption",
 						     "Toggle Speechmatics Captions",
 						     hotkey_toggle_caption, data);
@@ -649,6 +681,8 @@ static void speechmatics_caption_destroy(void *private_data)
 		obs_hotkey_unregister(data->hotkey_id);
 	if (data->text_source)
 		obs_source_release(data->text_source);
+	if (data->text_source_trans)
+		obs_source_release(data->text_source_trans);
 	delete data;
 }
 
@@ -669,13 +703,11 @@ static void speechmatics_caption_update(void *private_data, obs_data_t *settings
 	data->api_key = obs_data_get_string(settings, "api_key");
 	data->language = obs_data_get_string(settings, "language");
 	data->audio_source_name = obs_data_get_string(settings, "audio_source");
-	data->translate = obs_data_get_bool(settings, "translate");
+	data->display_mode = obs_data_get_string(settings, "display_mode");
 	data->target_lang = obs_data_get_string(settings, "target_lang");
+	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
 
 	// Latency / silence segmentation
-	data->max_delay = (float)obs_data_get_double(settings, "max_delay");
-	data->max_delay_mode = obs_data_get_string(settings, "max_delay_mode");
-	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
 
 	// 텍스트 스타일
 	data->color1 = (uint32_t)obs_data_get_int(settings, "color1");
@@ -724,10 +756,8 @@ static bool on_start_stop_clicked(obs_properties_t *, obs_property_t *property, 
 	data->api_key = obs_data_get_string(settings, "api_key");
 	data->language = obs_data_get_string(settings, "language");
 	data->audio_source_name = obs_data_get_string(settings, "audio_source");
-	data->translate = obs_data_get_bool(settings, "translate");
+	data->display_mode = obs_data_get_string(settings, "display_mode");
 	data->target_lang = obs_data_get_string(settings, "target_lang");
-	data->max_delay = (float)obs_data_get_double(settings, "max_delay");
-	data->max_delay_mode = obs_data_get_string(settings, "max_delay_mode");
 	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
 	obs_data_release(settings);
 
@@ -799,14 +829,28 @@ static obs_properties_t *speechmatics_caption_get_properties(void *private_data)
 		"Speechmatics uses ISO 639 codes — note that Mandarin Chinese is 'cmn' (not 'zh').\n"
 		"Setting the correct language is critical: Speechmatics RT does not auto-detect.");
 
-	// 번역 옵션
-	obs_property_t *p_translate = obs_properties_add_bool(props, "translate", "Enable Translation");
+	// 표시 모드 (Original / Translation / Both)
+	obs_property_t *mode =
+		obs_properties_add_list(props, "display_mode", "Display Mode", OBS_COMBO_TYPE_LIST,
+					OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(mode, "Original", "original");
+	obs_property_list_add_string(mode, "Translation", "translation");
+	obs_property_list_add_string(mode, "Both (Original + Translation)", "both");
 	obs_property_set_long_description(
-		p_translate,
-		"Stream translated captions in addition to the source-language transcript.\n"
-		"Translation is delivered as separate AddTranslation messages and shown on a\n"
-		"second line below the original transcript.\n"
-		"Note: translation uses extra API quota and may add a small amount of latency.");
+		mode,
+		"How captions are displayed:\n"
+		"• Original: Show only the source-language transcript.\n"
+		"• Translation: Show only the translated text.\n"
+		"• Both: Show original (top) and translation (bottom) stacked vertically.\n"
+		"\n"
+		"Note: Translation and Both modes use extra API quota.");
+	obs_property_set_modified_callback(mode, [](obs_properties_t *ps, obs_property_t *,
+						    obs_data_t *s) -> bool {
+		const char *dm = obs_data_get_string(s, "display_mode");
+		bool needs_trans = dm && strcmp(dm, "original") != 0;
+		obs_property_set_visible(obs_properties_get(ps, "target_lang"), needs_trans);
+		return true;
+	});
 
 	obs_property_t *target =
 		obs_properties_add_list(props, "target_lang", "Translate To", OBS_COMBO_TYPE_LIST,
@@ -820,59 +864,29 @@ static obs_properties_t *speechmatics_caption_get_properties(void *private_data)
 	obs_property_list_add_string(target, "German", "de");
 	obs_property_set_long_description(
 		target,
-		"Target language for translation. Only used when 'Enable Translation' is on.\n"
+		"Target language for translation.\n"
 		"Choose a different language than the source — translating to the same language\n"
 		"is rejected by the API.");
 
-	// ─── Latency / Silence Segmentation ───
+	// 초기 가시성: display_mode가 "original"이 아닐 때 target_lang 표시
+	if (data) {
+		obs_property_set_visible(target, data->display_mode != "original");
+	}
 
-	obs_property_t *p_max_delay = obs_properties_add_float_slider(
-		props, "max_delay", "Max Delay (sec)", 0.7, 20.0, 0.1);
-	obs_property_set_long_description(
-		p_max_delay,
-		"Maximum time (seconds) Speechmatics waits before emitting a final transcript.\n"
-		"Lower values = faster, more frequent finals (better for live captions).\n"
-		"Higher values = more accurate, longer segments (better for transcripts).\n"
-		"\n"
-		"Recommended:\n"
-		"• 1.0-1.5s: Live streaming, conversational, low-latency feel\n"
-		"• 2.0s: General use (default) — good balance of speed and accuracy\n"
-		"• 3.0-5.0s: Lectures, sermons — fewer interruptions, more context\n"
-		"• 5.0-20.0s: Offline-style transcription, highest accuracy");
+	// ─── Utterance Detection ───
 
-	obs_property_t *p_max_delay_mode =
-		obs_properties_add_list(props, "max_delay_mode", "Max Delay Mode",
-					OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(p_max_delay_mode, "Flexible (allow word boundary)", "flexible");
-	obs_property_list_add_string(p_max_delay_mode, "Fixed (strict cutoff)", "fixed");
-	obs_property_set_long_description(
-		p_max_delay_mode,
-		"How Speechmatics enforces Max Delay when a word straddles the boundary.\n"
-		"\n"
-		"• Flexible (default): Slightly exceed Max Delay to keep words intact.\n"
-		"  Recommended for natural-looking captions — words are never split.\n"
-		"\n"
-		"• Fixed: Cut exactly at Max Delay even if it splits a word.\n"
-		"  Use only when strict timing matters more than readability\n"
-		"  (e.g. real-time subtitles synced to a timecode).");
-
-	obs_property_t *p_eou = obs_properties_add_float_slider(
+	obs_property_t *p_eou = obs_properties_add_float(
 		props, "eou_silence", "End-of-Utterance Silence (sec)", 0.0, 2.0, 0.1);
 	obs_property_set_long_description(
 		p_eou,
-		"Silence duration (seconds) after which Speechmatics finalizes the current\n"
-		"utterance and emits an EndOfUtterance event. 0 = disabled (use Max Delay only).\n"
-		"\n"
-		"When enabled, captions snap to natural speech pauses instead of fixed time\n"
-		"windows. Useful for Q&A, dictation, and short utterances.\n"
+		"Silence duration (seconds) that triggers end of utterance.\n"
+		"0 = disabled (API default segmentation).\n"
 		"\n"
 		"Recommended:\n"
-		"• 0.0s: Disabled (default) — only Max Delay controls segmentation\n"
-		"• 0.4-0.6s: Quick conversation, dictation — snappy segment breaks\n"
-		"• 0.8-1.2s: Natural conversation — segments end at sentence boundaries\n"
-		"• 1.5-2.0s: Lectures, monologue — only break at long pauses\n"
+		"• 0.5-0.8s: Voice AI, live captions — responsive segment breaks\n"
+		"• 0.8-1.2s: Dictation — segments at sentence boundaries\n"
 		"\n"
-		"Note: Range is 0-2.0 seconds (Speechmatics RT API limit).");
+		"Range: 0-2.0 seconds (Speechmatics RT API limit).");
 
 	// ─── 텍스트 스타일 ───
 
@@ -939,13 +953,9 @@ static void speechmatics_caption_get_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, "api_key", "");
 	obs_data_set_default_string(settings, "language", "ko");
 	obs_data_set_default_string(settings, "audio_source", "");
-	obs_data_set_default_bool(settings, "translate", false);
+	obs_data_set_default_string(settings, "display_mode", "original");
 	obs_data_set_default_string(settings, "target_lang", "en");
-
-	// Latency / silence segmentation
-	obs_data_set_default_double(settings, "max_delay", 2.0);
-	obs_data_set_default_string(settings, "max_delay_mode", "flexible");
-	obs_data_set_default_double(settings, "eou_silence", 0.0);
+	obs_data_set_default_double(settings, "eou_silence", 0.5);
 
 	// 폰트 기본값 (obs_data_t 오브젝트)
 	obs_data_t *font_obj = obs_data_create();
@@ -972,13 +982,23 @@ static void speechmatics_caption_get_defaults(obs_data_t *settings)
 static uint32_t speechmatics_caption_get_width(void *private_data)
 {
 	auto *data = static_cast<speechmatics_caption_data *>(private_data);
-	return data->text_source ? obs_source_get_width(data->text_source) : 0;
+	uint32_t w1 = data->text_source ? obs_source_get_width(data->text_source) : 0;
+	if (data->display_mode == "both" && data->text_source_trans) {
+		uint32_t w2 = obs_source_get_width(data->text_source_trans);
+		return w1 > w2 ? w1 : w2;
+	}
+	return w1;
 }
 
 static uint32_t speechmatics_caption_get_height(void *private_data)
 {
 	auto *data = static_cast<speechmatics_caption_data *>(private_data);
-	return data->text_source ? obs_source_get_height(data->text_source) : 0;
+	uint32_t h1 = data->text_source ? obs_source_get_height(data->text_source) : 0;
+	if (data->display_mode == "both" && data->text_source_trans) {
+		uint32_t h2 = obs_source_get_height(data->text_source_trans);
+		return h1 + h2;
+	}
+	return h1;
 }
 
 static void speechmatics_caption_video_render(void *private_data, gs_effect_t *)
@@ -986,6 +1006,13 @@ static void speechmatics_caption_video_render(void *private_data, gs_effect_t *)
 	auto *data = static_cast<speechmatics_caption_data *>(private_data);
 	if (data->text_source)
 		obs_source_video_render(data->text_source);
+	if (data->display_mode == "both" && data->text_source_trans) {
+		uint32_t h1 = data->text_source ? obs_source_get_height(data->text_source) : 0;
+		gs_matrix_push();
+		gs_matrix_translate3f(0.0f, (float)h1, 0.0f);
+		obs_source_video_render(data->text_source_trans);
+		gs_matrix_pop();
+	}
 }
 
 // ─── 소스 등록 ───

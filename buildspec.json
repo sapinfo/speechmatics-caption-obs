@@ -38,7 +38,7 @@
     },
     "name": "speechmatics-caption-obs",
     "displayName": "Speechmatics Captions for OBS",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "author": "inseokko",
     "website": "https://github.com/inseokko/speechmatics-caption-obs",
     "email": "inseokko@example.com"
