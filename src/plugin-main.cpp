@@ -6,6 +6,7 @@
  */
 
 #include <obs-module.h>
+#include <media-io/audio-resampler.h>
 #include <plugin-support.h>
 
 #include <ixwebsocket/IXWebSocket.h>
@@ -43,6 +44,9 @@ struct speechmatics_caption_data {
 	// 오디오 캡처
 	obs_source_t *audio_source{nullptr};
 	std::string audio_source_name;
+
+	// Audio resampler (OBS project SR/layout -> 16kHz mono s16le with anti-aliasing)
+	audio_resampler_t *resampler{nullptr};
 
 	// seq_no 추적 (EndOfStream용)
 	std::atomic<int> last_seq_no{0};
@@ -137,6 +141,9 @@ static void update_trans_display(speechmatics_caption_data *data, const char *te
 }
 
 // ─── 오디오 캡처 콜백 ───
+// Uses OBS's audio_resampler to convert the project's actual SR/layout to
+// 16kHz mono int16 with proper anti-aliasing, instead of naive 3:1 decimation
+// (which would alias any content above ~5.3kHz into the passband).
 static void audio_capture_callback(void *param, obs_source_t *, const struct audio_data *audio,
 				   bool muted)
 {
@@ -144,28 +151,20 @@ static void audio_capture_callback(void *param, obs_source_t *, const struct aud
 
 	if (!data->captioning || !data->recognized || !data->websocket || muted)
 		return;
-	if (!audio->data[0] || audio->frames == 0)
+	if (!data->resampler || !audio->data[0] || audio->frames == 0)
 		return;
 
-	// OBS: float32, 48000Hz → Speechmatics: pcm_s16le, 16000Hz
-	const float *src = reinterpret_cast<const float *>(audio->data[0]);
-	uint32_t src_frames = audio->frames;
-	uint32_t dst_frames = src_frames / 3;
-	if (dst_frames == 0)
+	uint8_t *output[MAX_AV_PLANES] = {0};
+	uint32_t out_frames = 0;
+	uint64_t ts_offset = 0;
+	bool ok = audio_resampler_resample(data->resampler, output, &out_frames, &ts_offset,
+					   reinterpret_cast<const uint8_t *const *>(audio->data),
+					   audio->frames);
+	if (!ok || out_frames == 0 || !output[0])
 		return;
 
-	std::vector<int16_t> pcm16(dst_frames);
-	for (uint32_t i = 0; i < dst_frames; i++) {
-		float sample = src[i * 3];
-		if (sample > 1.0f)
-			sample = 1.0f;
-		if (sample < -1.0f)
-			sample = -1.0f;
-		pcm16[i] = static_cast<int16_t>(sample * 32767.0f);
-	}
-
-	data->websocket->sendBinary(
-		std::string(reinterpret_cast<const char *>(pcm16.data()), pcm16.size() * sizeof(int16_t)));
+	data->websocket->sendBinary(std::string(reinterpret_cast<const char *>(output[0]),
+						out_frames * sizeof(int16_t)));
 }
 
 // ─── transcript 필드에서 텍스트 추출 ───
@@ -361,6 +360,11 @@ static void stop_captioning(speechmatics_caption_data *data)
 		data->audio_source = nullptr;
 	}
 
+	if (data->resampler) {
+		audio_resampler_destroy(data->resampler);
+		data->resampler = nullptr;
+	}
+
 	// EndOfStream 전송
 	if (data->websocket && data->recognized) {
 		json eos;
@@ -401,6 +405,37 @@ static void start_captioning(speechmatics_caption_data *data)
 	}
 
 	update_text_display(data, "Connecting...");
+
+	// Create resampler matching OBS project audio -> 16kHz mono s16le with
+	// proper anti-aliasing. Honors the actual project SR (not hardcoded 48k).
+	struct obs_audio_info oai = {};
+	if (!obs_get_audio_info(&oai)) {
+		oai.samples_per_sec = 48000;
+		oai.speakers = SPEAKERS_STEREO;
+	}
+	struct resample_info src_info = {};
+	src_info.samples_per_sec = oai.samples_per_sec;
+	src_info.format = AUDIO_FORMAT_FLOAT_PLANAR;
+	src_info.speakers = oai.speakers;
+	struct resample_info dst_info = {};
+	dst_info.samples_per_sec = 16000;
+	dst_info.format = AUDIO_FORMAT_16BIT;
+	dst_info.speakers = SPEAKERS_MONO;
+
+	if (data->resampler) {
+		audio_resampler_destroy(data->resampler);
+		data->resampler = nullptr;
+	}
+	data->resampler = audio_resampler_create(&dst_info, &src_info);
+	if (!data->resampler) {
+		obs_log(LOG_ERROR, "Failed to create audio resampler (%u Hz -> 16 kHz)",
+			oai.samples_per_sec);
+		update_text_display(data, "Error: audio resampler init failed");
+		obs_source_release(audio_src);
+		return;
+	}
+	obs_log(LOG_INFO, "Audio resampler: %u Hz (%d ch) -> 16000 Hz mono",
+		oai.samples_per_sec, (int)oai.speakers);
 
 	{
 		std::lock_guard<std::mutex> lock(data->text_mutex);
@@ -607,6 +642,10 @@ static void test_connection(speechmatics_caption_data *data)
 	data->websocket->start();
 }
 
+// Forward declaration: centralized settings loader (defined after update()).
+// Keeps the 4 read sites (update/hotkey/test-button/start-stop-button) in sync.
+static void load_settings_into_data(speechmatics_caption_data *data, obs_data_t *settings);
+
 // ─── 핫키: Start/Stop Caption 토글 ───
 static void hotkey_toggle_caption(void *private_data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
 {
@@ -615,12 +654,7 @@ static void hotkey_toggle_caption(void *private_data, obs_hotkey_id, obs_hotkey_
 	auto *data = static_cast<speechmatics_caption_data *>(private_data);
 
 	obs_data_t *settings = obs_source_get_settings(data->source);
-	data->api_key = obs_data_get_string(settings, "api_key");
-	data->language = obs_data_get_string(settings, "language");
-	data->audio_source_name = obs_data_get_string(settings, "audio_source");
-	data->display_mode = obs_data_get_string(settings, "display_mode");
-	data->target_lang = obs_data_get_string(settings, "target_lang");
-	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
+	load_settings_into_data(data, settings);
 	obs_data_release(settings);
 
 	if (data->captioning)
@@ -696,7 +730,20 @@ static void speechmatics_caption_update(void *private_data, obs_data_t *settings
 {
 	auto *data = static_cast<speechmatics_caption_data *>(private_data);
 
-	// 폰트 (obs_data_t 오브젝트)
+	load_settings_into_data(data, settings);
+
+	if (!data->captioning && !data->connected) {
+		if (!data->api_key.empty())
+			update_text_display(data, "Speechmatics Captions Ready!");
+		else
+			update_text_display(data, "[Set API Key in Properties]");
+	}
+}
+
+// Centralized settings -> data loader. Used by update(), button callbacks, and hotkey.
+// Any new settings field belongs here (and only here) so all entry points stay in sync.
+static void load_settings_into_data(speechmatics_caption_data *data, obs_data_t *settings)
+{
 	obs_data_t *font_obj = obs_data_get_obj(settings, "font");
 	if (font_obj) {
 		data->font_face = obs_data_get_string(font_obj, "face");
@@ -713,22 +760,12 @@ static void speechmatics_caption_update(void *private_data, obs_data_t *settings
 	data->target_lang = obs_data_get_string(settings, "target_lang");
 	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
 
-	// Latency / silence segmentation
-
-	// 텍스트 스타일
 	data->color1 = (uint32_t)obs_data_get_int(settings, "color1");
 	data->color2 = (uint32_t)obs_data_get_int(settings, "color2");
 	data->outline = obs_data_get_bool(settings, "outline");
 	data->drop_shadow = obs_data_get_bool(settings, "drop_shadow");
 	data->custom_width = (int)obs_data_get_int(settings, "custom_width");
 	data->word_wrap = obs_data_get_bool(settings, "word_wrap");
-
-	if (!data->captioning && !data->connected) {
-		if (!data->api_key.empty())
-			update_text_display(data, "Speechmatics Captions Ready!");
-		else
-			update_text_display(data, "[Set API Key in Properties]");
-	}
 }
 
 // ─── 버튼 콜백들 ───
@@ -736,8 +773,7 @@ static bool on_test_clicked(obs_properties_t *, obs_property_t *, void *private_
 {
 	auto *data = static_cast<speechmatics_caption_data *>(private_data);
 	obs_data_t *settings = obs_source_get_settings(data->source);
-	data->api_key = obs_data_get_string(settings, "api_key");
-	data->language = obs_data_get_string(settings, "language");
+	load_settings_into_data(data, settings);
 	obs_data_release(settings);
 
 	if (data->connected) {
@@ -759,12 +795,7 @@ static bool on_start_stop_clicked(obs_properties_t *, obs_property_t *property, 
 	auto *data = static_cast<speechmatics_caption_data *>(private_data);
 
 	obs_data_t *settings = obs_source_get_settings(data->source);
-	data->api_key = obs_data_get_string(settings, "api_key");
-	data->language = obs_data_get_string(settings, "language");
-	data->audio_source_name = obs_data_get_string(settings, "audio_source");
-	data->display_mode = obs_data_get_string(settings, "display_mode");
-	data->target_lang = obs_data_get_string(settings, "target_lang");
-	data->eou_silence = (float)obs_data_get_double(settings, "eou_silence");
+	load_settings_into_data(data, settings);
 	obs_data_release(settings);
 
 	if (data->captioning) {
