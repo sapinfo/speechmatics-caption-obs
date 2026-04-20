@@ -16,6 +16,7 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <thread>
 #include <cmath>
 
 using json = nlohmann::json;
@@ -575,7 +576,12 @@ static void test_connection(speechmatics_caption_data *data)
 					data->websocket->send(eos.dump());
 				} else if (msg_type == "EndOfTranscript") {
 					// EndOfStream 응답 → 커넥션 닫기
-					data->websocket->stop();
+					// stop()은 run 스레드를 join한다. 이 콜백은
+					// 그 스레드에서 실행 중이므로 직접 호출 시
+					// self-join → system_error → SIGABRT.
+					// detach된 스레드로 위임.
+					ix::WebSocket *ws = data->websocket.get();
+					std::thread([ws]() { ws->stop(); }).detach();
 				} else if (msg_type == "Error") {
 					std::string reason = resp.value("reason", "Unknown error");
 					update_text_display(data, ("Error: " + reason).c_str());
