@@ -108,7 +108,7 @@ git push origin 0.3.0
 모든 properties에 `obs_property_set_long_description(p, "...")` 적용. 마우스 호버 시 표시.
 시나리오별 권장값 포함이 표준 패턴 (ElevenLabs/Speechmatics 두 프로젝트 동일).
 
-### Current version: 0.3.0
+### Current version: 0.3.1
 
 ## Related Project
 
